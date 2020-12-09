@@ -39,12 +39,7 @@ public class UseCase2 {
 
     public static void main(String[] args) throws InterruptedException {
         Server server = newServer();
-        server.start(8080).addListener(new ChannelFutureListener() {
-            @Override
-            public void operationComplete(ChannelFuture future) throws Exception {
-                logger.info("place open Browser. enter http://localhost:8080");
-            }
-        }).sync();
+        server.start(8080).sync();
 
         RunningHttpClientTest test = new RunningHttpClientTest();
         JsonObject body = new JsonObject("{\"body1\":\"post\"}");
