@@ -2,25 +2,21 @@ package io.netty.channel.nio;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.*;
-import io.netty.channel.nio.util.RunningHttpClientTest;
 import io.netty.channel.nio.util.Server;
 import io.netty.handler.codec.http.*;
 import io.netty.handler.stream.ChunkedWriteHandler;
+import io.netty.util.ResourceLeakDetector;
 import io.netty.util.concurrent.DefaultEventExecutor;
 import io.netty.util.concurrent.DefaultThreadFactory;
-import io.netty.util.concurrent.FastThreadLocalThread;
 import io.netty.util.concurrent.SingleThreadEventExecutor;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
-import io.vertx.core.json.JsonObject;
 
 import java.nio.channels.SelectionKey;
 import java.util.LinkedHashSet;
+import java.util.Random;
 import java.util.Set;
-import java.util.concurrent.Executor;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ThreadFactory;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 
 /**
  * {@link HttpObjectEncoder#state} error occurred。'unexpected message type: xxx'
@@ -34,25 +30,24 @@ import java.util.concurrent.TimeUnit;
  *  but {@link HttpObjectEncoder#state} error occurred。'unexpected message type: xxx'
  *
  */
-public class UseCase2 {
-    private static final InternalLogger logger = InternalLoggerFactory.getInstance(UseCase2.class);
+public class UseCase2Server {
+    private static final InternalLogger logger = InternalLoggerFactory.getInstance(UseCase2Server.class);
 
     public static void main(String[] args) throws InterruptedException {
+        ResourceLeakDetector.setLevel(ResourceLeakDetector.Level.DISABLED);
         Server server = newServer();
         server.start(8080).sync();
-
-        RunningHttpClientTest test = new RunningHttpClientTest();
-        JsonObject body = new JsonObject("{\"body1\":\"post\"}");
-        while (true) {
-            test.doRequest(8080, "localhost", "/",body).await();
-        }
     }
 
     private static Server<HttpObject> newServer(){
-        Set<ChannelHandlerContext> contextSet = new LinkedHashSet<>();
-        Executors.newScheduledThreadPool(1, new DefaultThreadFactory("ServerReport"))
+        Set<ChannelHandlerContext> channelContextSet = new LinkedHashSet<>();
+
+        new ScheduledThreadPoolExecutor(1, new DefaultThreadFactory("ServerReport"))
                 .scheduleAtFixedRate(()->{
-                    for (ChannelHandlerContext ctx : contextSet) {
+                    if(channelContextSet.isEmpty()){
+                        return;
+                    }
+                    for (ChannelHandlerContext ctx : channelContextSet) {
                         SelectionKey selectionKey = ((AbstractNioChannel) ctx.channel()).selectionKey();
                         boolean isFlushPending = selectionKey.isValid() && (selectionKey.interestOps() & SelectionKey.OP_WRITE) != 0;
                         long totalPendingWriteBytes = ctx.channel().unsafe().outboundBuffer().totalPendingWriteBytes();
@@ -66,21 +61,28 @@ public class UseCase2 {
                                 inEventLoop,
                                 pendingTasks);
                     }
+                    logger.info("-----------------------");
                 },5,5, TimeUnit.SECONDS);
 
         return new Server<HttpObject>(){
-            private SingleThreadEventExecutor executor = new DefaultEventExecutor();
+//            private Executor executor = new DefaultEventExecutor();
+            private Executor executor = new ThreadPoolExecutor(20, 20,
+                    60L, TimeUnit.MILLISECONDS,
+                    new LinkedBlockingQueue<>(),
+                    new DefaultThreadFactory("Business"));
 
             @Override
             public void initChannel(Channel channel) {
+                channel.pipeline().addLast(new HttpContentDecompressor(false));
                 channel.pipeline().addLast(new HttpServerCodec());
+//                channel.pipeline().addLast(new HttpContentCompressor(6,15,8,8192))
                 channel.pipeline().addLast(new ChunkedWriteHandler());
                 channel.pipeline().addLast(this);
             }
 
             @Override
             public void channelActive(ChannelHandlerContext ctx) throws Exception {
-                contextSet.add(ctx);
+                channelContextSet.add(ctx);
             }
 
             @Override
@@ -88,7 +90,7 @@ public class UseCase2 {
                 if(msg instanceof LastHttpContent){
                     executor.execute(()->{
                         // write body is 2M
-                        long testBodyLength = 1024L * 1024L * 2L;
+                        long testBodyLength = 1024L * 2L;
 //                        long testBodyLength = 0L;
 
                         HttpResponse httpResponse = new DefaultHttpResponse(HttpVersion.HTTP_1_1,HttpResponseStatus.OK);
@@ -103,7 +105,13 @@ public class UseCase2 {
 
                             ByteBuf buffer = ctx.alloc().buffer(bufferSize);
                             buffer.writeBytes(new byte[bufferSize]);
-                            ctx.writeAndFlush(buffer);
+                            ctx.write(buffer);
+                            if(ThreadLocalRandom.current().nextInt(0,3) == 1){
+                                int i1 = ThreadLocalRandom.current().nextInt(1, 3);
+                                for (int i = 0; i < i1; i++) {
+                                    ctx.flush();
+                                }
+                            }
                         }
                         ctx.writeAndFlush(LastHttpContent.EMPTY_LAST_CONTENT);
                     });
